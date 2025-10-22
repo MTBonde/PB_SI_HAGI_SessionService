@@ -16,13 +16,13 @@ try
         AutomaticRecoveryEnabled = true
     };
 
-    using var connection = factory.CreateConnection();
-    using var channel = connection.CreateModel();
+    using var connection = await factory.CreateConnectionAsync();
+    using var channel = await connection.CreateChannelAsync();
 
     Console.WriteLine("SessionService connected to RabbitMQ");
 
     // Declare exchange: players (direct)
-    channel.ExchangeDeclare(
+    await channel.ExchangeDeclareAsync(
         exchange: "players",
         type: ExchangeType.Direct,
         durable: true,
