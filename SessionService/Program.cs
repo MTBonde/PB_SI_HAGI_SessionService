@@ -27,8 +27,15 @@ try
         type: ExchangeType.Direct,
         durable: true,
         autoDelete: false);
-
     Console.WriteLine("Declared exchange: players (direct)");
+    
+    // Declare exchange: relay.session.events (topic)
+    await channel.ExchangeDeclareAsync(
+        exchange: "relay.session.events",
+        type: ExchangeType.Topic,
+        durable: true,
+        autoDelete: false);
+    Console.WriteLine("Declared exchange: relay.session.events (topic, durable)");
 
     Console.WriteLine("SessionService is running. Press Ctrl+C to exit.");
 
