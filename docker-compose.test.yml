@@ -1,4 +1,3 @@
-version: '3.8'
 
 services:
   rabbitmq:
@@ -9,14 +8,24 @@ services:
     networks:
       - test-net
 
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    networks:
+      - test-net
+
   session:
     build:
       context: ./SessionService
       dockerfile: Dockerfile
     depends_on:
       - rabbitmq
+      - redis
     environment:
       - RABBITMQ_HOST=rabbitmq
+      - REDIS_HOST=redis:6379
+      - SESSION_TIMEOUT_HOURS=1
     networks:
       - test-net
 
