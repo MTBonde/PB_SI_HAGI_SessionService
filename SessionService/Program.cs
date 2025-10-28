@@ -152,16 +152,31 @@ try
         {
             var body = ea.Body.ToArray();
             var message = Encoding.UTF8.GetString(body);
+            var routingKey = ea.RoutingKey;
+
+            Console.WriteLine($"Received presence event on routing key '{routingKey}': {message}");
+
             var presenceEvent = JsonSerializer.Deserialize<PresenceEvent>(message);
 
-            if (presenceEvent == null || string.IsNullOrEmpty(presenceEvent.UserId))
+            if (presenceEvent == null)
             {
-                Console.WriteLine("Invalid presence event received");
+                Console.WriteLine("Failed to deserialize presence event");
+                return;
+            }
+
+            // TODO: remove when Relay Service sends userId
+            // For now, we receive events but cannot process them without userId
+            Console.WriteLine($"Presence event received: eventType={presenceEvent.EventType}, timestamp={presenceEvent.Timestamp}");
+
+            // TODO: Uncomment when userId is available from Relay Service
+            /*
+            if (string.IsNullOrEmpty(presenceEvent.UserId))
+            {
+                Console.WriteLine("UserId missing in presence event - cannot manage session");
                 return;
             }
 
             var sessionKey = $"user:{presenceEvent.UserId}:session";
-            var routingKey = ea.RoutingKey;
 
             if (routingKey == "user.connected")
             {
@@ -175,13 +190,13 @@ try
 
                     await redisDb.StringSetAsync(sessionKey, newSessionId, sessionTimeout);
 
-                    Console.WriteLine($"Created session for connected user {presenceEvent.UserId}: {newSessionId}");
+                    Console.WriteLine($"Created session for connected user {presenceEvent.UserId} ({presenceEvent.Username}): {newSessionId}");
 
                     await PublishSessionEventAsync(channel, "session.created", presenceEvent.UserId, newSessionId);
                 }
                 else
                 {
-                    Console.WriteLine($"User {presenceEvent.UserId} connected with existing session: {existingSession}");
+                    Console.WriteLine($"User {presenceEvent.UserId} ({presenceEvent.Username}) connected with existing session: {existingSession}");
                 }
             }
             else if (routingKey == "user.disconnected")
@@ -193,19 +208,21 @@ try
                 {
                     await redisDb.KeyDeleteAsync(sessionKey);
 
-                    Console.WriteLine($"Terminated session for disconnected user {presenceEvent.UserId}: {existingSession}");
+                    Console.WriteLine($"Terminated session for disconnected user {presenceEvent.UserId} ({presenceEvent.Username}): {existingSession}");
 
                     await PublishSessionEventAsync(channel, "session.terminated", presenceEvent.UserId, existingSession.ToString());
                 }
                 else
                 {
-                    Console.WriteLine($"User {presenceEvent.UserId} disconnected but had no active session");
+                    Console.WriteLine($"User {presenceEvent.UserId} ({presenceEvent.Username}) disconnected but had no active session");
                 }
             }
+            */
         }
         catch (Exception ex)
         {
             Console.WriteLine($"Error processing presence event: {ex.Message}");
+            Console.WriteLine($"Stack trace: {ex.StackTrace}");
         }
     };
 
@@ -275,6 +292,11 @@ class LoginEvent
 
 class PresenceEvent
 {
-    public string UserId { get; set; } = string.Empty;
+    public string EventType { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; }
+
+    // TODO: Next iteration - add user context from JWT claims (must match Relay Service update)
+    // public string UserId { get; set; } = string.Empty;
+    // public string Username { get; set; } = string.Empty;
+    // public string UserRole { get; set; } = string.Empty;
 }
