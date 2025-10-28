@@ -66,6 +66,29 @@ try
 
     Console.WriteLine("Queue bound to players exchange with routing key 'player.login'");
 
+    // Declare queue for presence events (user connected/disconnected)
+    var presenceQueueResult = await channel.QueueDeclareAsync(
+        queue: "session.presence.queue",
+        durable: true,
+        exclusive: false,
+        autoDelete: false);
+    var presenceQueueName = presenceQueueResult.QueueName;
+    Console.WriteLine($"Declared queue: {presenceQueueName}");
+
+    // Bind queue to relay.session.events exchange for user.connected
+    await channel.QueueBindAsync(
+        queue: presenceQueueName,
+        exchange: "relay.session.events",
+        routingKey: "user.connected");
+
+    // Bind queue to relay.session.events exchange for user.disconnected
+    await channel.QueueBindAsync(
+        queue: presenceQueueName,
+        exchange: "relay.session.events",
+        routingKey: "user.disconnected");
+
+    Console.WriteLine("Queue bound to relay.session.events exchange with routing keys 'user.connected' and 'user.disconnected'");
+
     // Create message consumer to process incoming login events
     var consumer = new AsyncEventingBasicConsumer(channel);
 
@@ -120,6 +143,80 @@ try
     Console.WriteLine($"Session timeout: {sessionTimeoutHours} hour(s)");
     Console.WriteLine($"Ready to receive messages on queue: {queueName}");
 
+    // Create message consumer for presence events
+    var presenceConsumer = new AsyncEventingBasicConsumer(channel);
+
+    presenceConsumer.ReceivedAsync += async (model, ea) =>
+    {
+        try
+        {
+            var body = ea.Body.ToArray();
+            var message = Encoding.UTF8.GetString(body);
+            var presenceEvent = JsonSerializer.Deserialize<PresenceEvent>(message);
+
+            if (presenceEvent == null || string.IsNullOrEmpty(presenceEvent.UserId))
+            {
+                Console.WriteLine("Invalid presence event received");
+                return;
+            }
+
+            var sessionKey = $"user:{presenceEvent.UserId}:session";
+            var routingKey = ea.RoutingKey;
+
+            if (routingKey == "user.connected")
+            {
+                // Create new session if none exists
+                var existingSession = await redisDb.StringGetAsync(sessionKey);
+
+                if (!existingSession.HasValue)
+                {
+                    var newSessionId = Guid.NewGuid().ToString();
+                    var sessionTimeout = TimeSpan.FromHours(sessionTimeoutHours);
+
+                    await redisDb.StringSetAsync(sessionKey, newSessionId, sessionTimeout);
+
+                    Console.WriteLine($"Created session for connected user {presenceEvent.UserId}: {newSessionId}");
+
+                    await PublishSessionEventAsync(channel, "session.created", presenceEvent.UserId, newSessionId);
+                }
+                else
+                {
+                    Console.WriteLine($"User {presenceEvent.UserId} connected with existing session: {existingSession}");
+                }
+            }
+            else if (routingKey == "user.disconnected")
+            {
+                // Terminate session
+                var existingSession = await redisDb.StringGetAsync(sessionKey);
+
+                if (existingSession.HasValue)
+                {
+                    await redisDb.KeyDeleteAsync(sessionKey);
+
+                    Console.WriteLine($"Terminated session for disconnected user {presenceEvent.UserId}: {existingSession}");
+
+                    await PublishSessionEventAsync(channel, "session.terminated", presenceEvent.UserId, existingSession.ToString());
+                }
+                else
+                {
+                    Console.WriteLine($"User {presenceEvent.UserId} disconnected but had no active session");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Error processing presence event: {ex.Message}");
+        }
+    };
+
+    // Start consuming presence events
+    await channel.BasicConsumeAsync(
+        queue: presenceQueueName,
+        autoAck: true,
+        consumer: presenceConsumer);
+
+    Console.WriteLine($"Listening for presence events on queue: {presenceQueueName}");
+
     Console.WriteLine("SessionService is running. Press Ctrl+C to exit.");
 
     // Keep the worker running
@@ -173,5 +270,11 @@ class LoginEvent
 {
     public string UserId { get; set; } = string.Empty;
     public string Username { get; set; } = string.Empty;
+    public DateTime Timestamp { get; set; }
+}
+
+class PresenceEvent
+{
+    public string UserId { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; }
 }
