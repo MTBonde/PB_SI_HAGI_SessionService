@@ -100,22 +100,22 @@ try
             var message = Encoding.UTF8.GetString(body);
             var loginEvent = JsonSerializer.Deserialize<LoginEvent>(message);
 
-            if (loginEvent == null || string.IsNullOrEmpty(loginEvent.UserId))
+            if (loginEvent == null || string.IsNullOrEmpty(loginEvent.Username))
             {
                 Console.WriteLine("Invalid login event received");
                 return;
             }
 
-            var existingSessionKey = $"user:{loginEvent.UserId}:session";
+            var existingSessionKey = $"user:{loginEvent.Username}:session";
             var existingSession = await redisDb.StringGetAsync(existingSessionKey);
 
             if (existingSession.HasValue)
             {
-                Console.WriteLine($"User {loginEvent.UserId} already has active session: {existingSession}. Terminating old session.");
+                Console.WriteLine($"User {loginEvent.Username} already has active session: {existingSession}. Terminating old session.");
 
                 await redisDb.KeyDeleteAsync(existingSessionKey);
 
-                await PublishSessionEventAsync(channel, "session.terminated", loginEvent.UserId, existingSession.ToString());
+                await PublishSessionEventAsync(channel, "session.terminated", loginEvent.Username, existingSession.ToString());
             }
 
             var newSessionId = Guid.NewGuid().ToString();
@@ -123,9 +123,9 @@ try
 
             await redisDb.StringSetAsync(existingSessionKey, newSessionId, sessionTimeout);
 
-            Console.WriteLine($"Created session for user {loginEvent.UserId}: {newSessionId} (expires in {sessionTimeoutHours}h)");
+            Console.WriteLine($"Created session for user {loginEvent.Username}: {newSessionId} (expires in {sessionTimeoutHours}h)");
 
-            await PublishSessionEventAsync(channel, "session.created", loginEvent.UserId, newSessionId);
+            await PublishSessionEventAsync(channel, "session.created", loginEvent.Username, newSessionId);
         }
         catch (Exception ex)
         {
@@ -171,7 +171,7 @@ try
             // TODO: Uncomment when userId is available from Relay Service
             if (string.IsNullOrEmpty(presenceEvent.Username))
             {
-                Console.WriteLine("UserId missing in presence event - cannot manage session");
+                Console.WriteLine("Username missing in presence event - cannot manage session");
                 return;
             }
 
@@ -252,14 +252,14 @@ catch (Exception ex)
 
 Console.WriteLine("SessionService stopped.");
 
-async Task PublishSessionEventAsync(RabbitMQ.Client.IChannel ch, string eventType, string userId, string sessionId)
+async Task PublishSessionEventAsync(RabbitMQ.Client.IChannel ch, string eventType, string username, string sessionId)
 {
     try
     {
         var sessionEvent = new
         {
             eventType = eventType,
-            userId = userId,
+            username = username,
             sessionId = sessionId,
             timestamp = DateTime.UtcNow
         };
@@ -273,7 +273,7 @@ async Task PublishSessionEventAsync(RabbitMQ.Client.IChannel ch, string eventTyp
             mandatory: false,
             body: body);
 
-        Console.WriteLine($"Published session event: {eventType} for user {userId}");
+        Console.WriteLine($"Published session event: {eventType} for user {username}");
     }
     catch (Exception ex)
     {
@@ -283,7 +283,7 @@ async Task PublishSessionEventAsync(RabbitMQ.Client.IChannel ch, string eventTyp
 
 class LoginEvent
 {
-    public string UserId { get; set; } = string.Empty;
+    // public string UserId { get; set; } = string.Empty;
     public string Username { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; }
 }

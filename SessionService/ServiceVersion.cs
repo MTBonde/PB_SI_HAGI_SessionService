@@ -2,7 +2,7 @@ namespace SessionService;
 
 public static class ServiceVersion
 {
-    public const string Current = "0.3.0";
+    public const string Current = "0.3.1";
 }
 
 // Walking skeleton v0.1
