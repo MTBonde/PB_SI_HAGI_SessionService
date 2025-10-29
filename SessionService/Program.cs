@@ -169,14 +169,13 @@ try
             Console.WriteLine($"Presence event received: eventType={presenceEvent.EventType}, timestamp={presenceEvent.Timestamp}");
 
             // TODO: Uncomment when userId is available from Relay Service
-            /*
-            if (string.IsNullOrEmpty(presenceEvent.UserId))
+            if (string.IsNullOrEmpty(presenceEvent.Username))
             {
                 Console.WriteLine("UserId missing in presence event - cannot manage session");
                 return;
             }
 
-            var sessionKey = $"user:{presenceEvent.UserId}:session";
+            var sessionKey = $"user:{presenceEvent.Username}:session";
 
             if (routingKey == "user.connected")
             {
@@ -190,13 +189,13 @@ try
 
                     await redisDb.StringSetAsync(sessionKey, newSessionId, sessionTimeout);
 
-                    Console.WriteLine($"Created session for connected user {presenceEvent.UserId} ({presenceEvent.Username}): {newSessionId}");
+                    Console.WriteLine($"Created session for connected user {presenceEvent.Username} ({presenceEvent.Username}): {newSessionId}");
 
-                    await PublishSessionEventAsync(channel, "session.created", presenceEvent.UserId, newSessionId);
+                    await PublishSessionEventAsync(channel, "session.created", presenceEvent.Username, newSessionId);
                 }
                 else
                 {
-                    Console.WriteLine($"User {presenceEvent.UserId} ({presenceEvent.Username}) connected with existing session: {existingSession}");
+                    Console.WriteLine($"User {presenceEvent.Username} ({presenceEvent.Username}) connected with existing session: {existingSession}");
                 }
             }
             else if (routingKey == "user.disconnected")
@@ -208,16 +207,15 @@ try
                 {
                     await redisDb.KeyDeleteAsync(sessionKey);
 
-                    Console.WriteLine($"Terminated session for disconnected user {presenceEvent.UserId} ({presenceEvent.Username}): {existingSession}");
+                    Console.WriteLine($"Terminated session for disconnected user {presenceEvent.Username} ({presenceEvent.Username}): {existingSession}");
 
-                    await PublishSessionEventAsync(channel, "session.terminated", presenceEvent.UserId, existingSession.ToString());
+                    await PublishSessionEventAsync(channel, "session.terminated", presenceEvent.Username, existingSession.ToString());
                 }
                 else
                 {
-                    Console.WriteLine($"User {presenceEvent.UserId} ({presenceEvent.Username}) disconnected but had no active session");
+                    Console.WriteLine($"User {presenceEvent.Username} ({presenceEvent.Username}) disconnected but had no active session");
                 }
             }
-            */
         }
         catch (Exception ex)
         {
@@ -293,10 +291,10 @@ class LoginEvent
 class PresenceEvent
 {
     public string EventType { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string Role { get; set; } = string.Empty;
     public DateTime Timestamp { get; set; }
 
     // TODO: Next iteration - add user context from JWT claims (must match Relay Service update)
     // public string UserId { get; set; } = string.Empty;
-    // public string Username { get; set; } = string.Empty;
-    // public string UserRole { get; set; } = string.Empty;
 }
