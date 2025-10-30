@@ -1,300 +1,412 @@
-﻿using RabbitMQ.Client;
-using RabbitMQ.Client.Events;
-using StackExchange.Redis;
-using System.Text;
-using System.Text.Json;
-using SessionService;
+﻿// Program.cs
 
-Console.WriteLine($"SessionService v{ServiceVersion.Current} starting...");
+using System.Collections.Concurrent;
+using System.ComponentModel.DataAnnotations;
+using Hagi.Robust;
+//using Hagi.Robust.Probes;
 
-var redisHost = Environment.GetEnvironmentVariable("REDIS_HOST") ?? "localhost:6379";
-var rabbitMqHost = Environment.GetEnvironmentVariable("RABBITMQ_HOST") ?? "localhost";
-var sessionTimeoutHours = int.Parse(Environment.GetEnvironmentVariable("SESSION_TIMEOUT_HOURS") ?? "1");
-
-Console.WriteLine($"Connecting to Redis at {redisHost}...");
-var redis = ConnectionMultiplexer.Connect(redisHost);
-var redisDb = redis.GetDatabase();
-Console.WriteLine("Connected to Redis");
-
-Console.WriteLine($"Connecting to RabbitMQ at {rabbitMqHost}...");
-
-try
+/// <summary>
+/// Entry point for the minimal, HTTP-only SessionService.
+/// Tracks online users with optional serverId. No RabbitMQ is used.
+/// </summary>
+public sealed class Program
 {
-    var factory = new ConnectionFactory
+    /// <summary>
+    /// Main entry point that configures the web application and HTTP endpoints.
+    /// </summary>
+    public static async Task Main(string[] args)
     {
-        HostName = rabbitMqHost,
-        Port = 5672,
-        RequestedConnectionTimeout = TimeSpan.FromSeconds(30),
-        AutomaticRecoveryEnabled = true
-    };
+        // Create builder for the web application.
+        var builder = WebApplication.CreateBuilder(args);
+        
+        // add hagi.robus
+        builder.Services.AddHagiResilience();
+        //builder.Services.AddSingleton<IStartupProbe>(sp => new RedisProbe("redis", 6379));
 
-    using var connection = await factory.CreateConnectionAsync();
-    using var channel = await connection.CreateChannelAsync();
+        // Register in-memory store for online users.
+        builder.Services.AddSingleton<IOnlineUserStore, InMemoryOnlineUserStore>();
 
-    Console.WriteLine("SessionService connected to RabbitMQ");
+        // Build application.
+        var app = builder.Build();
 
-    // Declare exchange: players (direct)
-    await channel.ExchangeDeclareAsync(
-        exchange: "players",
-        type: ExchangeType.Direct,
-        durable: true,
-        autoDelete: false);
-    Console.WriteLine("Declared exchange: players (direct, durable)");
+        // Map endpoints.
+        MapSessionEndpoints(app);
+        
+        // Creates endpoint at /health/ready
+        app.MapReadinessEndpoint();  
 
-    // Declare exchange: relay.session.events (topic)
-    await channel.ExchangeDeclareAsync(
-        exchange: "relay.session.events",
-        type: ExchangeType.Topic,
-        durable: true,
-        autoDelete: false);
-    Console.WriteLine("Declared exchange: relay.session.events (topic, durable)");
-
-    // Declare queue for login events
-    var queueDeclareResult = await channel.QueueDeclareAsync(
-        queue: "session.login.queue",
-        durable: true,
-        exclusive: false,
-        autoDelete: false);
-    var queueName = queueDeclareResult.QueueName;
-    Console.WriteLine($"Declared queue: {queueName}");
-
-    // Bind queue to players exchange
-    await channel.QueueBindAsync(
-        queue: queueName,
-        exchange: "players",
-        routingKey: "player.login");
-
-    Console.WriteLine("Queue bound to players exchange with routing key 'player.login'");
-
-    // Declare queue for presence events (user connected/disconnected)
-    var presenceQueueResult = await channel.QueueDeclareAsync(
-        queue: "session.presence.queue",
-        durable: true,
-        exclusive: false,
-        autoDelete: false);
-    var presenceQueueName = presenceQueueResult.QueueName;
-    Console.WriteLine($"Declared queue: {presenceQueueName}");
-
-    // Bind queue to relay.session.events exchange for user.connected
-    await channel.QueueBindAsync(
-        queue: presenceQueueName,
-        exchange: "relay.session.events",
-        routingKey: "user.connected");
-
-    // Bind queue to relay.session.events exchange for user.disconnected
-    await channel.QueueBindAsync(
-        queue: presenceQueueName,
-        exchange: "relay.session.events",
-        routingKey: "user.disconnected");
-
-    Console.WriteLine("Queue bound to relay.session.events exchange with routing keys 'user.connected' and 'user.disconnected'");
-
-    // Create message consumer to process incoming login events
-    var consumer = new AsyncEventingBasicConsumer(channel);
-
-    consumer.ReceivedAsync += async (model, ea) =>
-    {
-        try
-        {
-            var body = ea.Body.ToArray();
-            var message = Encoding.UTF8.GetString(body);
-            var loginEvent = JsonSerializer.Deserialize<LoginEvent>(message);
-
-            if (loginEvent == null || string.IsNullOrEmpty(loginEvent.Username))
-            {
-                Console.WriteLine("Invalid login event received");
-                return;
-            }
-
-            var existingSessionKey = $"user:{loginEvent.Username}:session";
-            var existingSession = await redisDb.StringGetAsync(existingSessionKey);
-
-            if (existingSession.HasValue)
-            {
-                Console.WriteLine($"User {loginEvent.Username} already has active session: {existingSession}. Terminating old session.");
-
-                await redisDb.KeyDeleteAsync(existingSessionKey);
-
-                await PublishSessionEventAsync(channel, "session.terminated", loginEvent.Username, existingSession.ToString());
-            }
-
-            var newSessionId = Guid.NewGuid().ToString();
-            var sessionTimeout = TimeSpan.FromHours(sessionTimeoutHours);
-
-            await redisDb.StringSetAsync(existingSessionKey, newSessionId, sessionTimeout);
-
-            Console.WriteLine($"Created session for user {loginEvent.Username}: {newSessionId} (expires in {sessionTimeoutHours}h)");
-
-            await PublishSessionEventAsync(channel, "session.created", loginEvent.Username, newSessionId);
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error processing login event: {ex.Message}");
-        }
-    };
-
-    // Start consuming messages from the queue
-    await channel.BasicConsumeAsync(
-        queue: queueName,
-        autoAck: true,
-        consumer: consumer);
-
-    Console.WriteLine("SessionService is running. Listening for login events...");
-    Console.WriteLine($"Session timeout: {sessionTimeoutHours} hour(s)");
-    Console.WriteLine($"Ready to receive messages on queue: {queueName}");
-
-    // Create message consumer for presence events
-    var presenceConsumer = new AsyncEventingBasicConsumer(channel);
-
-    presenceConsumer.ReceivedAsync += async (model, ea) =>
-    {
-        try
-        {
-            var body = ea.Body.ToArray();
-            var message = Encoding.UTF8.GetString(body);
-            var routingKey = ea.RoutingKey;
-
-            Console.WriteLine($"Received presence event on routing key '{routingKey}': {message}");
-
-            var presenceEvent = JsonSerializer.Deserialize<PresenceEvent>(message);
-
-            if (presenceEvent == null)
-            {
-                Console.WriteLine("Failed to deserialize presence event");
-                return;
-            }
-
-            // TODO: remove when Relay Service sends userId
-            // For now, we receive events but cannot process them without userId
-            Console.WriteLine($"Presence event received: eventType={presenceEvent.EventType}, timestamp={presenceEvent.Timestamp}");
-
-            // TODO: Uncomment when userId is available from Relay Service
-            if (string.IsNullOrEmpty(presenceEvent.Username))
-            {
-                Console.WriteLine("Username missing in presence event - cannot manage session");
-                return;
-            }
-
-            var sessionKey = $"user:{presenceEvent.Username}:session";
-
-            if (routingKey == "user.connected")
-            {
-                // Create new session if none exists
-                var existingSession = await redisDb.StringGetAsync(sessionKey);
-
-                if (!existingSession.HasValue)
-                {
-                    var newSessionId = Guid.NewGuid().ToString();
-                    var sessionTimeout = TimeSpan.FromHours(sessionTimeoutHours);
-
-                    await redisDb.StringSetAsync(sessionKey, newSessionId, sessionTimeout);
-
-                    Console.WriteLine($"Created session for connected user {presenceEvent.Username} ({presenceEvent.Username}): {newSessionId}");
-
-                    await PublishSessionEventAsync(channel, "session.created", presenceEvent.Username, newSessionId);
-                }
-                else
-                {
-                    Console.WriteLine($"User {presenceEvent.Username} ({presenceEvent.Username}) connected with existing session: {existingSession}");
-                }
-            }
-            else if (routingKey == "user.disconnected")
-            {
-                // Terminate session
-                var existingSession = await redisDb.StringGetAsync(sessionKey);
-
-                if (existingSession.HasValue)
-                {
-                    await redisDb.KeyDeleteAsync(sessionKey);
-
-                    Console.WriteLine($"Terminated session for disconnected user {presenceEvent.Username} ({presenceEvent.Username}): {existingSession}");
-
-                    await PublishSessionEventAsync(channel, "session.terminated", presenceEvent.Username, existingSession.ToString());
-                }
-                else
-                {
-                    Console.WriteLine($"User {presenceEvent.Username} ({presenceEvent.Username}) disconnected but had no active session");
-                }
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine($"Error processing presence event: {ex.Message}");
-            Console.WriteLine($"Stack trace: {ex.StackTrace}");
-        }
-    };
-
-    // Start consuming presence events
-    await channel.BasicConsumeAsync(
-        queue: presenceQueueName,
-        autoAck: true,
-        consumer: presenceConsumer);
-
-    Console.WriteLine($"Listening for presence events on queue: {presenceQueueName}");
-
-    Console.WriteLine("SessionService is running. Press Ctrl+C to exit.");
-
-    // Keep the worker running
-    var cancellationTokenSource = new CancellationTokenSource();
-    Console.CancelKeyPress += (sender, eventArgs) =>
-    {
-        eventArgs.Cancel = true;
-        cancellationTokenSource.Cancel();
-    };
-
-    cancellationTokenSource.Token.WaitHandle.WaitOne();
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"Error: {ex.Message}");
-    Environment.Exit(1);
-}
-
-Console.WriteLine("SessionService stopped.");
-
-async Task PublishSessionEventAsync(RabbitMQ.Client.IChannel ch, string eventType, string username, string sessionId)
-{
-    try
-    {
-        var sessionEvent = new
-        {
-            eventType = eventType,
-            username = username,
-            sessionId = sessionId,
-            timestamp = DateTime.UtcNow
-        };
-
-        var message = JsonSerializer.Serialize(sessionEvent);
-        var body = Encoding.UTF8.GetBytes(message);
-
-        await ch.BasicPublishAsync(
-            exchange: "relay.session.events",
-            routingKey: $"session.{eventType.Split('.')[1]}",
-            mandatory: false,
-            body: body);
-
-        Console.WriteLine($"Published session event: {eventType} for user {username}");
+        // Start the application.
+        await app.RunAsync();
     }
-    catch (Exception ex)
+
+    /// <summary>
+    /// Maps all HTTP endpoints required by RelayService.
+    /// </summary>
+    private static void MapSessionEndpoints(WebApplication app)
     {
-        Console.WriteLine($"Failed to publish session event: {ex.Message}");
+        // POST /online/login
+        // Registers or updates an online user session.
+        app.MapPost("/online/login", async (LoginRequest request, IOnlineUserStore store) =>
+        {
+            // Upsert online user record.
+            await store.UpsertAsync(new OnlineUser
+            {
+                Username = request.Username,
+                Role = request.Role,
+                ConnectionId = request.ConnectionId,
+                ServerId = request.ServerId,
+                ConnectedAt = DateTime.UtcNow,
+                LastSeen = DateTime.UtcNow
+            });
+
+            // Return 200 OK.
+            return Results.Ok();
+        });
+
+        // POST /online/logout
+        // Removes a user from the online list.
+        app.MapPost("/online/logout", async (LogoutRequest request, IOnlineUserStore store) =>
+        {
+            // Remove the user record.
+            await store.RemoveAsync(request.Username);
+
+            // Return 204 No Content.
+            return Results.NoContent();
+        });
+
+        // POST /online/set-server
+        // Updates the current serverId for a user.
+        app.MapPost("/online/set-server", async (SetServerRequest request, IOnlineUserStore store) =>
+        {
+            // Set serverId for the user.
+            var updated = await store.SetServerAsync(request.Username, request.ServerId);
+
+            // Return 404 if user not found, else 200 OK.
+            return updated ? Results.Ok() : Results.NotFound();
+        });
+
+        // GET /online
+        // Returns a list of all online users.
+        app.MapGet("/online", async (IOnlineUserStore store) =>
+        {
+            // Fetch all users.
+            var users = await store.GetAllAsync();
+
+            // Project to DTO to avoid over-sharing internal fields if needed.
+            var result = users.Select(u => new OnlineUserView
+            {
+                Username = u.Username,
+                Role = u.Role,
+                ServerId = u.ServerId
+            });
+
+            // Return 200 OK with result.
+            return Results.Ok(result);
+        });
+
+        // GET /online/{username}
+        // Returns online status and role/server for a specific user.
+        app.MapGet("/online/{username}", async (string username, IOnlineUserStore store) =>
+        {
+            // Get user by username.
+            var user = await store.GetAsync(username);
+
+            // Return 200 with online=false if not present.
+            if (user is null)
+            {
+                return Results.Ok(new OnlineStatusView
+                {
+                    Online = false,
+                    Role = null,
+                    ServerId = null,
+                    Username = null
+                });
+            }
+
+            // Return online details.
+            return Results.Ok(new OnlineStatusView
+            {
+                Online = true,
+                Role = user.Role,
+                ServerId = user.ServerId,
+                Username = user.Username
+            });
+        });
+
+        // GET /online/players
+        // Returns all online users with role == "player".
+        app.MapGet("/online/players", async (IOnlineUserStore store) =>
+        {
+            // Filter players.
+            var players = (await store.GetAllAsync())
+                .Where(u => string.Equals(u.Role, "player", StringComparison.OrdinalIgnoreCase))
+                .Select(u => new { u.Username });
+
+            // Return 200 OK with result.
+            return Results.Ok(players);
+        });
+
+        // GET /online/server/{serverId}
+        // Returns all online users attached to a specific server.
+        app.MapGet("/online/server/{serverId}", async (string serverId, IOnlineUserStore store) =>
+        {
+            // Filter by server id.
+            var users = (await store.GetAllAsync())
+                .Where(u => string.Equals(u.ServerId, serverId, StringComparison.Ordinal))
+                .Select(u => new { u.Username });
+
+            // Return 200 OK with result.
+            return Results.Ok(users);
+        });
     }
 }
 
-class LoginEvent
+/// <summary>
+/// Contract for a store that tracks online users.
+/// </summary>
+public interface IOnlineUserStore
 {
-    // public string UserId { get; set; } = string.Empty;
-    public string Username { get; set; } = string.Empty;
-    public DateTime Timestamp { get; set; }
+    /// <summary>
+    /// Inserts or updates a user's online record.
+    /// </summary>
+    Task UpsertAsync(OnlineUser user);
+
+    /// <summary>
+    /// Removes a user's online record by username.
+    /// </summary>
+    Task RemoveAsync(string username);
+
+    /// <summary>
+    /// Gets a single user by username, or null if not found.
+    /// </summary>
+    Task<OnlineUser?> GetAsync(string username);
+
+    /// <summary>
+    /// Gets a snapshot of all online users.
+    /// </summary>
+    Task<IReadOnlyCollection<OnlineUser>> GetAllAsync();
+
+    /// <summary>
+    /// Sets the serverId for a user if present.
+    /// Returns true if updated, false if user missing.
+    /// </summary>
+    Task<bool> SetServerAsync(string username, string serverId);
 }
 
-class PresenceEvent
+/// <summary>
+/// In-memory implementation of IOnlineUserStore using a thread-safe dictionary.
+/// </summary>
+public sealed class InMemoryOnlineUserStore : IOnlineUserStore
 {
-    public string EventType { get; set; } = string.Empty;
+    // Thread-safe store keyed by username.
+    private readonly ConcurrentDictionary<string, OnlineUser> _users = new();
+
+    /// <summary>
+    /// Inserts or updates the user's online record.
+    /// </summary>
+    public Task UpsertAsync(OnlineUser user)
+    {
+        // Upsert semantics: the latest connect wins.
+        _users.AddOrUpdate(user.Username, user, (_, __) => user);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Removes a user by username.
+    /// </summary>
+    public Task RemoveAsync(string username)
+    {
+        // Attempt to remove; ignore the out value.
+        _users.TryRemove(username, out _);
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Gets a user by username.
+    /// </summary>
+    public Task<OnlineUser?> GetAsync(string username)
+    {
+        // Try to resolve current snapshot.
+        _users.TryGetValue(username, out var user);
+        return Task.FromResult(user);
+    }
+
+    /// <summary>
+    /// Gets a snapshot of all online users.
+    /// </summary>
+    public Task<IReadOnlyCollection<OnlineUser>> GetAllAsync()
+    {
+        // Snapshot into a list to avoid external mutation.
+        IReadOnlyCollection<OnlineUser> snapshot = _users.Values.ToList();
+        return Task.FromResult(snapshot);
+    }
+
+    /// <summary>
+    /// Sets the serverId for an existing user.
+    /// </summary>
+    public Task<bool> SetServerAsync(string username, string serverId)
+    {
+        // Try to get and mutate in place.
+        if (_users.TryGetValue(username, out var user))
+        {
+            user.ServerId = serverId;
+            user.LastSeen = DateTime.UtcNow;
+            _users[username] = user;
+            return Task.FromResult(true);
+        }
+
+        // User not found.
+        return Task.FromResult(false);
+    }
+}
+
+/// <summary>
+/// Domain model representing an online user session.
+/// </summary>
+public sealed class OnlineUser
+{
+    /// <summary>
+    /// Username serves as the unique identifier and is provided by Auth/Relay.
+    /// </summary>
+    [Required]
     public string Username { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Role for authorization decisions (e.g., admin or player).
+    /// </summary>
+    [Required]
     public string Role { get; set; } = string.Empty;
-    public DateTime Timestamp { get; set; }
 
-    // TODO: Next iteration - add user context from JWT claims (must match Relay Service update)
-    // public string UserId { get; set; } = string.Empty;
+    /// <summary>
+    /// Connection identifier generated by Relay.
+    /// </summary>
+    [Required]
+    public string ConnectionId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional current server identifier for same-server messaging.
+    /// </summary>
+    public string? ServerId { get; set; }
+
+    /// <summary>
+    /// Timestamp when the user was marked online.
+    /// </summary>
+    public DateTime ConnectedAt { get; set; }
+
+    /// <summary>
+    /// Timestamp of last activity (e.g., heartbeat or state change).
+    /// </summary>
+    public DateTime LastSeen { get; set; }
+}
+
+/// <summary>
+/// Request payload for /online/login.
+/// </summary>
+public sealed class LoginRequest
+{
+    /// <summary>
+    /// Username serves as the unique identifier.
+    /// </summary>
+    [Required]
+    public string Username { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Role (admin or player).
+    /// </summary>
+    [Required]
+    public string Role { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Relay connection identifier.
+    /// </summary>
+    [Required]
+    public string ConnectionId { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Optional current server identifier.
+    /// </summary>
+    public string? ServerId { get; set; }
+}
+
+/// <summary>
+/// Request payload for /online/logout.
+/// </summary>
+public sealed class LogoutRequest
+{
+    /// <summary>
+    /// Username.
+    /// </summary>
+    [Required]
+    public string Username { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Relay connection identifier.
+    /// </summary>
+    [Required]
+    public string ConnectionId { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// Request payload for /online/set-server.
+/// </summary>
+public sealed class SetServerRequest
+{
+    /// <summary>
+    /// Username.
+    /// </summary>
+    [Required]
+    public string Username { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Target server identifier.
+    /// </summary>
+    [Required]
+    public string ServerId { get; set; } = string.Empty;
+}
+
+/// <summary>
+/// View model for /online/{username}.
+/// </summary>
+public sealed class OnlineStatusView
+{
+    /// <summary>
+    /// Whether the user is online.
+    /// </summary>
+    public bool Online { get; set; }
+
+    /// <summary>
+    /// User role if online.
+    /// </summary>
+    public string? Role { get; set; }
+
+    /// <summary>
+    /// Current server id if online.
+    /// </summary>
+    public string? ServerId { get; set; }
+
+    /// <summary>
+    /// Display name if online.
+    /// </summary>
+    public string? Username { get; set; }
+}
+
+/// <summary>
+/// Public view model for listing online users.
+/// </summary>
+public sealed class OnlineUserView
+{
+    /// <summary>
+    /// Username.
+    /// </summary>
+    public string Username { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Role.
+    /// </summary>
+    public string Role { get; set; } = string.Empty;
+
+    /// <summary>
+    /// Current server id.
+    /// </summary>
+    public string? ServerId { get; set; }
 }
