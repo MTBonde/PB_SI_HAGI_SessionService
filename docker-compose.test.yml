@@ -1,31 +1,11 @@
 
 services:
-  rabbitmq:
-    image: rabbitmq:3-management
-    ports:
-      - "5672:5672"
-      - "15672:15672"
-    networks:
-      - test-net
-
-  redis:
-    image: redis:7-alpine
-    ports:
-      - "6379:6379"
-    networks:
-      - test-net
-
   session:
     build:
       context: ./SessionService
       dockerfile: Dockerfile
-    depends_on:
-      - rabbitmq
-      - redis
-    environment:
-      - RABBITMQ_HOST=rabbitmq
-      - REDIS_HOST=redis:6379
-      - SESSION_TIMEOUT_HOURS=1
+    ports:
+      - "8080:8080"
     networks:
       - test-net
 
