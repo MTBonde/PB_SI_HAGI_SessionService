@@ -28,6 +28,6 @@ jobs:
         run: |
           IMAGE_NAME=ghcr.io/mtbonde/hagi-sessionservice
           VERSION=0.4.0
-
+          
           docker build -t $IMAGE_NAME:$VERSION -t $IMAGE_NAME:latest ./SessionService
           docker push $IMAGE_NAME --all-tags
