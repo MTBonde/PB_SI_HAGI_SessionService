@@ -1,0 +1,307 @@
+{
+  "openapi": "3.0.1",
+  "info": {
+    "title": "SessionService API",
+    "description": "Minimal HTTP-only SessionService that tracks online users with optional serverId. No RabbitMQ is used.",
+    "version": "0.4.0"
+  },
+  "paths": {
+    "/online/login": {
+      "post": {
+        "tags": ["Session"],
+        "summary": "Register or update an online user session",
+        "description": "Registers or updates an online user session with username, role, connectionId, and optional serverId.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LoginRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "User session registered successfully"
+          }
+        }
+      }
+    },
+    "/online/logout": {
+      "post": {
+        "tags": ["Session"],
+        "summary": "Remove a user from the online list",
+        "description": "Removes a user from the online list by username.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LogoutRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "204": {
+            "description": "User logged out successfully"
+          }
+        }
+      }
+    },
+    "/online/set-server": {
+      "post": {
+        "tags": ["Session"],
+        "summary": "Update the current serverId for a user",
+        "description": "Updates the current serverId for a user.",
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SetServerRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Server ID updated successfully"
+          },
+          "404": {
+            "description": "User not found"
+          }
+        }
+      }
+    },
+    "/online": {
+      "get": {
+        "tags": ["Query"],
+        "summary": "Get all online users",
+        "description": "Returns a list of all online users with username, role, and serverId.",
+        "responses": {
+          "200": {
+            "description": "List of online users",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/OnlineUserView"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/online/{username}": {
+      "get": {
+        "tags": ["Query"],
+        "summary": "Get online status for a specific user",
+        "description": "Returns online status and role/server for a specific user.",
+        "parameters": [
+          {
+            "name": "username",
+            "in": "path",
+            "required": true,
+            "description": "The username to check",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "User online status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OnlineStatusView"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/online/players": {
+      "get": {
+        "tags": ["Query"],
+        "summary": "Get all online players",
+        "description": "Returns all online users with role equal to 'player'.",
+        "responses": {
+          "200": {
+            "description": "List of online players",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "username": {
+                        "type": "string",
+                        "description": "Player username"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/online/server/{serverId}": {
+      "get": {
+        "tags": ["Query"],
+        "summary": "Get all online users on a specific server",
+        "description": "Returns all online users attached to a specific server.",
+        "parameters": [
+          {
+            "name": "serverId",
+            "in": "path",
+            "required": true,
+            "description": "The server ID to filter by",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of users on the specified server",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "username": {
+                        "type": "string",
+                        "description": "User username"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health/ready": {
+      "get": {
+        "tags": ["Health"],
+        "summary": "Readiness probe endpoint",
+        "description": "Health check endpoint for readiness probes.",
+        "responses": {
+          "200": {
+            "description": "Service is ready"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "LoginRequest": {
+        "type": "object",
+        "required": ["username", "role", "connectionId"],
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "Username serves as the unique identifier"
+          },
+          "role": {
+            "type": "string",
+            "description": "Role (admin or player)"
+          },
+          "connectionId": {
+            "type": "string",
+            "description": "Relay connection identifier"
+          },
+          "serverId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Optional current server identifier"
+          }
+        }
+      },
+      "LogoutRequest": {
+        "type": "object",
+        "required": ["username", "connectionId"],
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "Username"
+          },
+          "connectionId": {
+            "type": "string",
+            "description": "Relay connection identifier"
+          }
+        }
+      },
+      "SetServerRequest": {
+        "type": "object",
+        "required": ["username", "serverId"],
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "Username"
+          },
+          "serverId": {
+            "type": "string",
+            "description": "Target server identifier"
+          }
+        }
+      },
+      "OnlineUserView": {
+        "type": "object",
+        "properties": {
+          "username": {
+            "type": "string",
+            "description": "Username"
+          },
+          "role": {
+            "type": "string",
+            "description": "Role"
+          },
+          "serverId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Current server id"
+          }
+        }
+      },
+      "OnlineStatusView": {
+        "type": "object",
+        "properties": {
+          "online": {
+            "type": "boolean",
+            "description": "Whether the user is online"
+          },
+          "role": {
+            "type": "string",
+            "nullable": true,
+            "description": "User role if online"
+          },
+          "serverId": {
+            "type": "string",
+            "nullable": true,
+            "description": "Current server id if online"
+          },
+          "username": {
+            "type": "string",
+            "nullable": true,
+            "description": "Display name if online"
+          }
+        }
+      }
+    }
+  }
+}
