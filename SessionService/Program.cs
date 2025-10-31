@@ -188,9 +188,10 @@ public interface IOnlineUserStore
 
     /// <summary>
     /// Sets the serverId for a user if present.
+    /// Pass null to clear the serverId (e.g., when leaving a server).
     /// Returns true if updated, false if user missing.
     /// </summary>
-    Task<bool> SetServerAsync(string username, string serverId);
+    Task<bool> SetServerAsync(string username, string? serverId);
 }
 
 /// <summary>
@@ -243,8 +244,9 @@ public sealed class InMemoryOnlineUserStore : IOnlineUserStore
 
     /// <summary>
     /// Sets the serverId for an existing user.
+    /// Pass null to clear the serverId (e.g., when leaving a server).
     /// </summary>
-    public Task<bool> SetServerAsync(string username, string serverId)
+    public Task<bool> SetServerAsync(string username, string? serverId)
     {
         // Try to get and mutate in place.
         if (_users.TryGetValue(username, out var user))
@@ -358,10 +360,9 @@ public sealed class SetServerRequest
     public string Username { get; set; } = string.Empty;
 
     /// <summary>
-    /// Target server identifier.
+    /// Target server identifier. Set to null to clear the serverId when leaving a server.
     /// </summary>
-    [Required]
-    public string ServerId { get; set; } = string.Empty;
+    public string? ServerId { get; set; }
 }
 
 /// <summary>

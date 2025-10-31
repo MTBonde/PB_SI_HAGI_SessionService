@@ -248,7 +248,7 @@
       },
       "SetServerRequest": {
         "type": "object",
-        "required": ["username", "serverId"],
+        "required": ["username"],
         "properties": {
           "username": {
             "type": "string",
@@ -256,7 +256,8 @@
           },
           "serverId": {
             "type": "string",
-            "description": "Target server identifier"
+            "nullable": true,
+            "description": "Target server identifier. Set to null to clear the serverId when leaving a server."
           }
         }
       },
