@@ -48,115 +48,209 @@ public sealed class Program
         // Registers or updates an online user session.
         app.MapPost("/online/login", async (LoginRequest request, IOnlineUserStore store) =>
         {
-            // Upsert online user record.
-            await store.UpsertAsync(new OnlineUser
+            try
             {
-                Username = request.Username,
-                Role = request.Role,
-                ConnectionId = request.ConnectionId,
-                ServerId = request.ServerId,
-                ConnectedAt = DateTime.UtcNow,
-                LastSeen = DateTime.UtcNow
-            });
+                Console.WriteLine($"[LOGIN] User '{request.Username}' (Role: {request.Role}, ConnectionId: {request.ConnectionId}, ServerId: {request.ServerId ?? "null"})");
 
-            // Return 200 OK.
-            return Results.Ok();
+                // Upsert online user record.
+                await store.UpsertAsync(new OnlineUser
+                {
+                    Username = request.Username,
+                    Role = request.Role,
+                    ConnectionId = request.ConnectionId,
+                    ServerId = request.ServerId,
+                    ConnectedAt = DateTime.UtcNow,
+                    LastSeen = DateTime.UtcNow
+                });
+
+                Console.WriteLine($"[LOGIN] Successfully registered user '{request.Username}'");
+
+                // Return 200 OK.
+                return Results.Ok();
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"[LOGIN ERROR] Failed to register user '{request.Username}': {exception.Message}");
+                throw;
+            }
         });
 
         // POST /online/logout
         // Removes a user from the online list.
         app.MapPost("/online/logout", async (LogoutRequest request, IOnlineUserStore store) =>
         {
-            // Remove the user record.
-            await store.RemoveAsync(request.Username);
+            try
+            {
+                Console.WriteLine($"[LOGOUT] User '{request.Username}' (ConnectionId: {request.ConnectionId})");
 
-            // Return 204 No Content.
-            return Results.NoContent();
+                // Remove the user record.
+                await store.RemoveAsync(request.Username);
+
+                Console.WriteLine($"[LOGOUT] Successfully removed user '{request.Username}'");
+
+                // Return 204 No Content.
+                return Results.NoContent();
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"[LOGOUT ERROR] Failed to remove user '{request.Username}': {exception.Message}");
+                throw;
+            }
         });
 
         // POST /online/set-server
         // Updates the current serverId for a user.
         app.MapPost("/online/set-server", async (SetServerRequest request, IOnlineUserStore store) =>
         {
-            // Set serverId for the user.
-            var updated = await store.SetServerAsync(request.Username, request.ServerId);
+            try
+            {
+                var serverIdDisplay = request.ServerId ?? "null";
+                Console.WriteLine($"[SET-SERVER] User '{request.Username}' setting serverId to '{serverIdDisplay}'");
 
-            // Return 404 if user not found, else 200 OK.
-            return updated ? Results.Ok() : Results.NotFound();
+                // Set serverId for the user.
+                var updated = await store.SetServerAsync(request.Username, request.ServerId);
+
+                if (updated)
+                {
+                    Console.WriteLine($"[SET-SERVER] Successfully updated serverId for user '{request.Username}' to '{serverIdDisplay}'");
+                }
+                else
+                {
+                    Console.WriteLine($"[SET-SERVER WARNING] User '{request.Username}' not found");
+                }
+
+                // Return 404 if user not found, else 200 OK.
+                return updated ? Results.Ok() : Results.NotFound();
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"[SET-SERVER ERROR] Failed to set server for user '{request.Username}': {exception.Message}");
+                throw;
+            }
         });
 
         // GET /online
         // Returns a list of all online users.
         app.MapGet("/online", async (IOnlineUserStore store) =>
         {
-            // Fetch all users.
-            var users = await store.GetAllAsync();
-
-            // Project to DTO to avoid over-sharing internal fields if needed.
-            var result = users.Select(u => new OnlineUserView
+            try
             {
-                Username = u.Username,
-                Role = u.Role,
-                ServerId = u.ServerId
-            });
+                Console.WriteLine("[QUERY] Fetching all online users");
 
-            // Return 200 OK with result.
-            return Results.Ok(result);
+                // Fetch all users.
+                var users = await store.GetAllAsync();
+
+                // Project to DTO to avoid over-sharing internal fields if needed.
+                var result = users.Select(u => new OnlineUserView
+                {
+                    Username = u.Username,
+                    Role = u.Role,
+                    ServerId = u.ServerId
+                }).ToList();
+
+                Console.WriteLine($"[QUERY] Found {result.Count} online users");
+
+                // Return 200 OK with result.
+                return Results.Ok(result);
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"[QUERY ERROR] Failed to fetch all online users: {exception.Message}");
+                throw;
+            }
         });
 
         // GET /online/{username}
         // Returns online status and role/server for a specific user.
         app.MapGet("/online/{username}", async (string username, IOnlineUserStore store) =>
         {
-            // Get user by username.
-            var user = await store.GetAsync(username);
-
-            // Return 200 with online=false if not present.
-            if (user is null)
+            try
             {
+                Console.WriteLine($"[QUERY] Checking online status for user '{username}'");
+
+                // Get user by username.
+                var user = await store.GetAsync(username);
+
+                // Return 200 with online=false if not present.
+                if (user is null)
+                {
+                    Console.WriteLine($"[QUERY] User '{username}' is offline");
+                    return Results.Ok(new OnlineStatusView
+                    {
+                        Online = false,
+                        Role = null,
+                        ServerId = null,
+                        Username = null
+                    });
+                }
+
+                // Return online details.
+                Console.WriteLine($"[QUERY] User '{username}' is online (Role: {user.Role}, ServerId: {user.ServerId ?? "null"})");
                 return Results.Ok(new OnlineStatusView
                 {
-                    Online = false,
-                    Role = null,
-                    ServerId = null,
-                    Username = null
+                    Online = true,
+                    Role = user.Role,
+                    ServerId = user.ServerId,
+                    Username = user.Username
                 });
             }
-
-            // Return online details.
-            return Results.Ok(new OnlineStatusView
+            catch (Exception exception)
             {
-                Online = true,
-                Role = user.Role,
-                ServerId = user.ServerId,
-                Username = user.Username
-            });
+                Console.WriteLine($"[QUERY ERROR] Failed to check status for user '{username}': {exception.Message}");
+                throw;
+            }
         });
 
         // GET /online/players
         // Returns all online users with role == "player".
         app.MapGet("/online/players", async (IOnlineUserStore store) =>
         {
-            // Filter players.
-            var players = (await store.GetAllAsync())
-                .Where(u => string.Equals(u.Role, "player", StringComparison.OrdinalIgnoreCase))
-                .Select(u => new { u.Username });
+            try
+            {
+                Console.WriteLine("[QUERY] Fetching all online players");
 
-            // Return 200 OK with result.
-            return Results.Ok(players);
+                // Filter players.
+                var players = (await store.GetAllAsync())
+                    .Where(u => string.Equals(u.Role, "player", StringComparison.OrdinalIgnoreCase))
+                    .Select(u => new { u.Username })
+                    .ToList();
+
+                Console.WriteLine($"[QUERY] Found {players.Count} online players");
+
+                // Return 200 OK with result.
+                return Results.Ok(players);
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"[QUERY ERROR] Failed to fetch online players: {exception.Message}");
+                throw;
+            }
         });
 
         // GET /online/server/{serverId}
         // Returns all online users attached to a specific server.
         app.MapGet("/online/server/{serverId}", async (string serverId, IOnlineUserStore store) =>
         {
-            // Filter by server id.
-            var users = (await store.GetAllAsync())
-                .Where(u => string.Equals(u.ServerId, serverId, StringComparison.Ordinal))
-                .Select(u => new { u.Username });
+            try
+            {
+                Console.WriteLine($"[QUERY] Fetching all users on server '{serverId}'");
 
-            // Return 200 OK with result.
-            return Results.Ok(users);
+                // Filter by server id.
+                var users = (await store.GetAllAsync())
+                    .Where(u => string.Equals(u.ServerId, serverId, StringComparison.Ordinal))
+                    .Select(u => new { u.Username })
+                    .ToList();
+
+                Console.WriteLine($"[QUERY] Found {users.Count} users on server '{serverId}'");
+
+                // Return 200 OK with result.
+                return Results.Ok(users);
+            }
+            catch (Exception exception)
+            {
+                Console.WriteLine($"[QUERY ERROR] Failed to fetch users for server '{serverId}': {exception.Message}");
+                throw;
+            }
         });
     }
 }
