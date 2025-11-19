@@ -11,4 +11,10 @@
     <PackageReference Include="HAGI.Robust" Version="1.0.0" />
   </ItemGroup>
 
+  <ItemGroup>
+    <None Update="../version.txt" Link="version.txt">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
+  </ItemGroup>
+
 </Project>

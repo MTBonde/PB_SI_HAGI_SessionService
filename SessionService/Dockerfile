@@ -3,9 +3,11 @@ WORKDIR /app
 
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
-COPY ["SessionService.csproj", "."]
-RUN dotnet restore
-COPY . .
+COPY ["SessionService/SessionService.csproj", "SessionService/"]
+RUN dotnet restore "SessionService/SessionService.csproj"
+COPY SessionService/ SessionService/
+COPY version.txt SessionService/
+WORKDIR /src/SessionService
 RUN dotnet build "SessionService.csproj" -c Release -o /app/build
 
 FROM build AS publish
