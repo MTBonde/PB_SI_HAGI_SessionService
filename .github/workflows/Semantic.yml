@@ -1,0 +1,64 @@
+name: Semantic Release
+
+on:
+  workflow_run:
+    workflows: ["CI - Build and Test"]
+    types:
+      - completed
+    branches:
+      - main
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_branch }}
+          fetch-depth: 0
+
+      - name: Run semantic release
+        uses: go-semantic-release/action@v1
+        id: semantic_release
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          changelog-file: CHANGELOG.md
+          allow-initial-development-versions: true
+          prepend: true
+
+      - name: Display release information
+        if: steps.semantic_release.outputs.version != ''
+        run: |
+          echo "Version: ${{ steps.semantic_release.outputs.version }}"
+          echo "Changelog: ${{ steps.semantic_release.outputs.changelog }}"
+          echo "Release created successfully!"
+
+      - name: Create version.txt and commit changes
+        if: steps.semantic_release.outputs.version != ''
+        run: |
+          VERSION="${{ steps.semantic_release.outputs.version }}"
+          VERSION_CLEAN="${VERSION#v}"
+          echo "$VERSION_CLEAN" > version.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md version.txt
+          git commit -m "chore: update CHANGELOG.md and version.txt for ${{ steps.semantic_release.outputs.version }} [skip ci]"
+          git push
+
+      - name: Trigger CD workflow
+        if: steps.semantic_release.outputs.version != ''
+        run: |
+          gh workflow run cd.yml \
+            -f version=${{ steps.semantic_release.outputs.version }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: No release needed
+        if: steps.semantic_release.outputs.version == ''
+        run: echo "No release necessary, no relevant commits found."

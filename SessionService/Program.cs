@@ -18,7 +18,7 @@ public sealed class Program
     {
         // Create builder for the web application.
         var builder = WebApplication.CreateBuilder(args);
-        
+
         // add hagi.robus
         builder.Services.AddHagiResilience();
         //builder.Services.AddSingleton<IStartupProbe>(sp => new RedisProbe("redis", 6379));
@@ -29,21 +29,52 @@ public sealed class Program
         // Build application.
         var app = builder.Build();
 
+        // Get application version
+        var applicationVersion = GetApplicationVersion();
+        app.Logger.LogInformation("SessionService v{Version} starting...", applicationVersion);
+
         // Map endpoints.
-        MapSessionEndpoints(app);
-        
+        MapSessionEndpoints(app, applicationVersion);
+
         // Creates endpoint at /health/ready
-        app.MapReadinessEndpoint();  
+        app.MapReadinessEndpoint();
 
         // Start the application.
         await app.RunAsync();
     }
 
     /// <summary>
+    /// Reads the application version from version.txt or falls back to ServiceVersion.Current.
+    /// </summary>
+    private static string GetApplicationVersion()
+    {
+        const string versionFilePath = "version.txt";
+        const string fallbackVersion = SessionService.ServiceVersion.Current;
+
+        try
+        {
+            if (File.Exists(versionFilePath))
+            {
+                return File.ReadAllText(versionFilePath).Trim();
+            }
+        }
+        catch (Exception)
+        {
+            // If reading fails, fall back to ServiceVersion
+        }
+
+        return fallbackVersion;
+    }
+
+    /// <summary>
     /// Maps all HTTP endpoints required by RelayService.
     /// </summary>
-    private static void MapSessionEndpoints(WebApplication app)
+    private static void MapSessionEndpoints(WebApplication app, string applicationVersion)
     {
+        // GET /version
+        // Returns service name and version.
+        app.MapGet("/version", () => new { service = "SessionService", version = applicationVersion });
+
         // POST /online/login
         // Registers or updates an online user session.
         app.MapPost("/online/login", async (LoginRequest request, IOnlineUserStore store) =>
